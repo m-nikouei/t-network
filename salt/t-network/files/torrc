@@ -1,0 +1,9 @@
+# Tor config for the sys-split proxy. Transparent TCP + DNS for downstream (agent).
+# Runs as debian-tor so the firewall can permit only this UID to egress.
+User debian-tor
+DataDirectory /var/lib/tor
+SocksPort 0
+TransPort 0.0.0.0:9040
+DNSPort   0.0.0.0:5300
+AutomapHostsOnResolve 1
+VirtualAddrNetworkIPv4 10.192.0.0/10
