@@ -1,6 +1,6 @@
 # dom0 structure: the proxy, the untrusted agent, the offline vault + staging, and
 # the qrexec data policy. Prerequisite (run once, then highstate):
-#   qvm-clone debian-12 t-split
+#   qvm-clone debian-13-xfce t-split
 # Apply:
 #   sudo qubesctl state.apply t-network.dom0
 
@@ -18,7 +18,7 @@ sys-split:
 
 agent-vm:
   qvm.present:
-    - template: debian-12
+    - template: debian-13-xfce
     - label: orange
   qvm.prefs:
     - netvm: sys-split
@@ -29,7 +29,7 @@ agent-vm:
 # Offline vault for extracted data (netvm: "" means no network).
 agent-out:
   qvm.present:
-    - template: debian-12
+    - template: debian-13-xfce
     - label: black
   qvm.prefs:
     - netvm: ""
@@ -39,7 +39,7 @@ agent-out:
 # Offline staging qube for authoring agent inputs (e.g. task JSON).
 agent-staging:
   qvm.present:
-    - template: debian-12
+    - template: debian-13-xfce
     - label: gray
   qvm.prefs:
     - netvm: ""

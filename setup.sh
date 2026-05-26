@@ -16,7 +16,7 @@ exists(){ qvm-check --quiet "$1" >/dev/null 2>&1; }
 push(){ qvm-run --pass-io -u root "$2" "cat > '$3'" < "$1"; qvm-run -u root "$2" "chmod $4 '$3'"; }
 
 say "1/7  proxy template ($SPLIT_TPL)"
-exists "$SPLIT_TPL" || qvm-clone debian-12 "$SPLIT_TPL"
+exists "$SPLIT_TPL" || qvm-clone debian-13-xfce "$SPLIT_TPL"
 
 say "2/7  install tor/wireguard/nftables into $SPLIT_TPL"
 qvm-run -u root "$SPLIT_TPL" 'apt-get -q update && DEBIAN_FRONTEND=noninteractive apt-get -y install tor wireguard nftables && systemctl disable tor'
@@ -38,13 +38,13 @@ if ! qvm-run -u root "$PROXY" 'test -s /rw/config/wg0.conf' 2>/dev/null; then
 fi
 
 say "4/7  untrusted agent ($AGENT)"
-exists "$AGENT" || qvm-create --class AppVM --template debian-12 --label orange "$AGENT"
+exists "$AGENT" || qvm-create --class AppVM --template debian-13-xfce --label orange "$AGENT"
 qvm-prefs "$AGENT" netvm "$PROXY"
 
 say "5/7  offline vault ($VAULT) + staging ($STAGE)"
-exists "$VAULT" || qvm-create --class AppVM --template debian-12 --label black "$VAULT"
+exists "$VAULT" || qvm-create --class AppVM --template debian-13-xfce --label black "$VAULT"
 qvm-prefs "$VAULT" netvm ''
-exists "$STAGE" || qvm-create --class AppVM --template debian-12 --label gray "$STAGE"
+exists "$STAGE" || qvm-create --class AppVM --template debian-13-xfce --label gray "$STAGE"
 qvm-prefs "$STAGE" netvm ''
 
 say "6/7  dom0 qrexec data policy"

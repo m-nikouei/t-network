@@ -90,7 +90,9 @@ implants, and a global passive adversary correlating the Tor exit vs. ProtonVPN 
 
 - A laptop you can **wipe** that meets Qubes hardware requirements: 64-bit, **VT-x + VT-d
   (IOMMU)**, ≥16 GB RAM recommended, ≥64 GB SSD. Check the Qubes HCL before committing.
-- Qubes OS **4.2** installer (verify the signature per Qubes docs before flashing USB).
+- Qubes OS **4.3** installer (verify the signature per Qubes docs before flashing USB).
+  This guide was built against a 4.3 install with the **`debian-13-xfce`** and
+  **`fedora-42-xfce`** templates, plus **Whonix 18** (gateway + workstation).
 - A **ProtonVPN free** account. Free supports manual WireGuard but with limits: free-tier
   servers only, **one** connection, no port-forwarding/P2P, possibly slower; the only
   config toggle is VPN Accelerator.
@@ -100,7 +102,7 @@ implants, and a global passive adversary correlating the Tor exit vs. ProtonVPN 
 
 ## 5. Install Qubes & lay out the qubes
 
-1. Flash the verified Qubes 4.2 ISO, boot the laptop from it, and install (full-disk
+1. Flash the verified Qubes 4.3 ISO, boot the laptop from it, and install (full-disk
    encryption on; this becomes the dedicated host). Complete the first-boot wizard — it
    creates `dom0`, `sys-net`, `sys-firewall`, default templates, and (optionally) Whonix.
 2. Update everything: **Qubes Manager → update**, or in dom0
@@ -113,7 +115,7 @@ implants, and a global passive adversary correlating the Tor exit vs. ProtonVPN 
 Use a dedicated **template clone** for `sys-split` so the Tor/WireGuard packages don't end
 up in your other qubes. In dom0:
 ```bash
-qvm-clone debian-12 t-split        # template just for the proxy
+qvm-clone debian-13-xfce t-split        # template just for the proxy
 ```
 
 ---
@@ -285,7 +287,7 @@ recent handshake and `ss -ltnp | grep 9040` shows Tor listening.
 
 In dom0:
 ```bash
-qvm-create --class AppVM --template debian-12 --label orange agent-vm
+qvm-create --class AppVM --template debian-13-xfce --label orange agent-vm
 qvm-prefs agent-vm netvm sys-split        # its ONLY network path
 qvm-firewall agent-vm reset               # then lock to deny-all outbound at Qubes layer
 qvm-firewall agent-vm add action=drop     # belt-and-suspenders; sys-split already enforces
@@ -320,7 +322,7 @@ sealed — it travels over a vchan through dom0, not over IP.**
 
 ### 8a. Create an offline vault to receive data
 ```bash
-qvm-create --class AppVM --template debian-12 --label black agent-out
+qvm-create --class AppVM --template debian-13-xfce --label black agent-out
 qvm-prefs agent-out netvm none        # AIR-GAPPED: no network at all
 ```
 A booby-trapped file from the agent detonates here, in a qube that cannot phone home.
@@ -374,7 +376,7 @@ to you than extraction — but keep it one-shot (`qvm-copy`), never a persistent
 
 1. Author the JSON in a trusted, offline staging qube:
    ```bash
-   qvm-create --class AppVM --template debian-12 --label gray agent-staging
+   qvm-create --class AppVM --template debian-13-xfce --label gray agent-staging
    qvm-prefs agent-staging netvm none        # offline; it only stages input files
    ```
 2. From `agent-staging`, copy the file into the agent (or file manager → "Copy to other
@@ -459,7 +461,7 @@ and to `agent-out` requires the dom0 prompt.
 
 ## 12. Quick build checklist
 
-- [ ] Qubes 4.2 installed on the wiped laptop (verified ISO, FDE on)
+- [ ] Qubes 4.3 installed on the wiped laptop (verified ISO, FDE on); `debian-13-xfce`, `fedora-42-xfce`, and Whonix 18 (gateway + workstation) templates present
 - [ ] `t-split` template: `tor wireguard nftables` installed, system `tor` disabled
 - [ ] `sys-split`: `provides_network=True`, netvm=`sys-firewall`, IPv6 off
 - [ ] `/rw/config/torrc` (TransPort 9040 / DNSPort 5300, User debian-tor)

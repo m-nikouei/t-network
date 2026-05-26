@@ -15,7 +15,7 @@ salt/t-network/
 ```
 
 ## Manual prerequisites (cannot/should not be automated)
-1. **Install Qubes OS 4.2** on the wiped laptop and finish the first-boot wizard; update
+1. **Install Qubes OS 4.3** on the wiped laptop and finish the first-boot wizard; update
    dom0 and templates. (Qube creation is automated; the OS install is not.)
 2. **Download the ProtonVPN free WireGuard config** (web login) — this is the one secret.
    It is never stored in the repo or in Salt; you install it by hand (see below).
@@ -38,7 +38,7 @@ Copy the formula tree into dom0's user-salt root, then apply in order:
 ```bash
 sudo cp -r salt/t-network /srv/user_salt/
 
-qvm-clone debian-12 t-split                                              # one-time prereq
+qvm-clone debian-13-xfce t-split                                         # one-time prereq
 sudo qubesctl --skip-dom0 --targets=t-split  state.apply t-network.pkgs  # template pkgs
 qvm-shutdown --wait t-split
 
