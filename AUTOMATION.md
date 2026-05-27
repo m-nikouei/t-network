@@ -14,7 +14,7 @@ Ansible later, it's straightforward to lift `setup.sh` into a role.
 
 ## Manual prerequisites (cannot/should not be automated)
 
-1. **Install Ubuntu 24.04 LTS Server** on the wiped laptop. Verify the ISO
+1. **Install Ubuntu 26.04 LTS Server** on the wiped laptop. Verify the ISO
    checksum, enable full-disk encryption (LUKS2), choose the minimal install,
    and skip every "featured server snap." (OS install is not automated.)
 2. **Download the ProtonVPN free WireGuard config** (web login) — this is the

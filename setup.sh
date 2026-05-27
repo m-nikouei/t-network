@@ -4,7 +4,7 @@
 # config, or build the agent/triage guest VMs (those steps are interactive —
 # the script prints the virt-install commands at the end).
 #
-# Requires: Ubuntu 24.04 LTS Server (or similar), root.
+# Requires: Ubuntu 26.04 LTS Server (or similar), root.
 set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }
@@ -139,7 +139,7 @@ table inet ks {
         100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4
     }
 
-    chain mark {
+    chain premark {
         type filter hook prerouting priority -150; policy accept;
         iifname \$BRIDGE udp dport != 53 meta mark set 0x2
     }

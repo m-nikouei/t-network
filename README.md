@@ -71,7 +71,7 @@ vs. the ProtonVPN IP.
 ## 3. Architecture
 
 ```
-   host (Ubuntu 24.04 LTS, minimal, FDE, AppArmor)
+   host (Ubuntu 26.04 LTS, minimal, FDE, AppArmor)
    ─────────────────────────────────────────────────────────────────────────
     physical NIC (eth0 / wlan0) ── real IP, sees home LAN, host updates here
         │
@@ -125,7 +125,7 @@ vs. the ProtonVPN IP.
 
 - A laptop you can **wipe**, with: 64-bit CPU, **VT-x + VT-d** (IOMMU), ≥8 GB RAM, ≥64 GB
   SSD. Confirm `egrep -c '(vmx|svm)' /proc/cpuinfo` returns non-zero on the live USB.
-- **Ubuntu 24.04 LTS Server** install media (verify the SHA256 against
+- **Ubuntu 26.04 LTS Server** install media (verify the SHA256 against
   `ubuntu.com/download/server` before flashing). Server, not Desktop: smaller TCB, no GUI
   on the host. A minimal XFCE comes later only if you actually need a GUI for `virt-manager`.
 - A **ProtonVPN free** account. Free supports manual WireGuard but with limits: free-tier
@@ -137,7 +137,7 @@ vs. the ProtonVPN IP.
 
 ## 5. Install Ubuntu & harden the host
 
-1. Boot the verified Ubuntu 24.04 LTS Server installer. During install:
+1. Boot the verified Ubuntu 26.04 LTS Server installer. During install:
    - **Encrypt the root LVM** (LUKS2). This is your data-at-rest seal.
    - Minimal install: do **not** select Docker, Kubernetes, etc. snaps.
    - Only OpenSSH if you actually need remote access; otherwise leave it off.
@@ -769,7 +769,7 @@ ip route                                        # default via 10.13.13.1
 
 ## 12. Quick build checklist
 
-- [ ] Ubuntu 24.04 LTS Server installed (verified ISO, FDE on, minimal install)
+- [ ] Ubuntu 26.04 LTS Server installed (verified ISO, FDE on, minimal install)
 - [ ] AppArmor + unattended-upgrades enabled; UFW disabled; IPv6 off; `net.ipv4.ip_forward=1`
 - [ ] Packages installed: `tor`, `wireguard`, `nftables`, `qemu-system-x86`,
       `libvirt-daemon-system`, `virtinst`, `virtiofsd`, `ovmf`, `swtpm`
