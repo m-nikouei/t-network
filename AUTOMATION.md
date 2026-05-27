@@ -20,8 +20,25 @@ salt/t-network/
 2. **Download the ProtonVPN free WireGuard config** (web login) — this is the one secret.
    It is never stored in the repo or in Salt; you install it by hand (see below).
 
+## Getting the repo into dom0
+dom0 has no network, so you can't `git clone` there directly. Pull it into a networked
+qube first, then hand it to dom0 over qrexec. **Review the code before running it in
+dom0 — that transfer is the trust boundary.**
+
+In a networked qube (e.g. `personal`):
+```bash
+git clone https://github.com/m-nikouei/t-network.git
+tar -cf t-network.tar t-network
+```
+In **dom0**:
+```bash
+qvm-run --pass-io personal 'cat /home/user/t-network.tar' > t-network.tar
+tar -xf t-network.tar && cd t-network
+```
+Re-syncing later? Pull in the networked qube, re-tar, repeat the `qvm-run` step. Salt
+state and `setup.sh` are both idempotent, so re-applying after an update is safe.
+
 ## Path A — bash script (quick first build)
-Get this folder into **dom0** (e.g. from a qube: `qvm-run --pass-io <qube> 'cat t-network.tar' > t-network.tar` then untar). Review it — pulling code into dom0 is a trust decision.
 ```bash
 chmod +x setup.sh verify.sh
 ./setup.sh

@@ -5,10 +5,12 @@
 # No IPv6 anywhere on this proxy.
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1
 
-# Tor (transparent TCP + DNS), as debian-tor so the firewall can key on its UID.
+# Tor (transparent TCP + DNS). Start as root; torrc has `User debian-tor`, so Tor
+# drops privs itself — needed because setgroups()/setgid() during the drop require
+# root caps. Starting via `sudo -u debian-tor` here would EPERM on that drop.
 install -d -o debian-tor -g debian-tor /var/lib/tor
 pkill -u debian-tor tor 2>/dev/null
-sudo -u debian-tor tor -f /rw/config/torrc --runasdaemon 1
+tor -f /rw/config/torrc --runasdaemon 1
 
 # ProtonVPN WireGuard (Table=off in wg0.conf => no catch-all route).
 wg show wg0 >/dev/null 2>&1 || wg-quick up /rw/config/wg0.conf
