@@ -1,9 +1,0 @@
-## Fail-closed agent data policy (Qubes 4.2 qrexec). First match wins.
-## OUTBOUND: the agent may push files ONLY to the offline vault, with a dom0 prompt.
-qubes.Filecopy        *  agent-vm       agent-out  ask default_target=agent-out
-qubes.Filecopy        *  agent-vm       @anyvm     deny
-## INBOUND: ONLY the offline staging qube may hand files to the agent, with a prompt.
-qubes.Filecopy        *  agent-staging  agent-vm   ask default_target=agent-vm
-qubes.Filecopy        *  @anyvm         agent-vm   deny
-## CLIPBOARD: deny pasting out of the untrusted agent.
-qubes.ClipboardPaste  *  agent-vm       @anyvm     deny
