@@ -52,8 +52,7 @@ ExitRelay 0
 ClientOnly 1
 EOF
 
-say "4/9  wireguard placeholder (if absent)"
-WG_PLACEHOLDER=0
+say "4/9  wireguard placeholder (if absent or still CHANGE_ME)"
 if [ ! -s /etc/wireguard/wg0.conf ]; then
   install -d -m 0700 /etc/wireguard
   cat >/etc/wireguard/wg0.conf <<'EOF'
@@ -72,6 +71,12 @@ AllowedIPs = 0.0.0.0/0
 Endpoint = 0.0.0.0:51820
 EOF
   chmod 600 /etc/wireguard/wg0.conf
+fi
+
+# Treat as placeholder whenever the file still contains CHANGE_ME sentinels —
+# this is what makes re-runs safe before the real Proton config is installed.
+WG_PLACEHOLDER=0
+if grep -q 'CHANGE_ME' /etc/wireguard/wg0.conf; then
   WG_PLACEHOLDER=1
 fi
 
