@@ -31,15 +31,30 @@ systemctl disable --now tor 2>/dev/null || true   # re-enabled with the right or
 systemctl mask ufw 2>/dev/null || true
 systemctl enable --now unattended-upgrades libvirtd
 
-say "2/8  sysctl (IPv6 off, ip_forward on)"
+say "2/8  sysctl + conntrack (IPv6 off, ip_forward on, high-concurrency tuning)"
+# The host NATs/redirects every TCP connection the VM opens, so a high-concurrency
+# workload (crawler/scraper: many short connections) is bounded by the conntrack table,
+# the ephemeral port range, and open file descriptors. Tune all three.
+echo nf_conntrack >/etc/modules-load.d/nf_conntrack.conf
+modprobe nf_conntrack 2>/dev/null || true
+echo 'options nf_conntrack hashsize=262144' >/etc/modprobe.d/nf_conntrack.conf
 cat >/etc/sysctl.d/60-jobs-host.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv4.ip_forward = 1
+# High-concurrency (many short-lived connections) tuning:
+net.netfilter.nf_conntrack_max = 1048576
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.ipv4.ip_local_port_range = 10240 65535
+net.ipv4.tcp_tw_reuse = 1
+net.core.somaxconn = 4096
+net.core.netdev_max_backlog = 16384
+fs.file-max = 2097152
 EOF
 sysctl --system >/dev/null
 
-say "3/8  tor: TransPort/DNSPort on $BRIDGE_IP only"
+say "3/8  tor: TransPort/DNSPort on $BRIDGE_IP only (+ high-concurrency conn limits)"
 cat >/etc/tor/torrc <<EOF
 User debian-tor
 DataDirectory /var/lib/tor
@@ -50,6 +65,14 @@ AutomapHostsOnResolve 1
 VirtualAddrNetworkIPv4 10.192.0.0/10
 ExitRelay 0
 ClientOnly 1
+# Many concurrent streams from the workload: raise the fd/conn ceiling (default 1000)
+# and let more circuits build in parallel. LimitNOFILE is bumped in the unit (step 8).
+ConnLimit 8192
+MaxClientCircuitsPending 128
+# Your exit IP rotates when Tor retires a dirty circuit (default 600s). For a scraper that
+# means the source IP changes ~every 10 min. Raise to pin an IP longer, lower to rotate
+# faster (e.g. to spread across rate limits):
+# MaxCircuitDirtiness 600
 EOF
 
 say "4/8  wireguard placeholder (if absent or still CHANGE_ME)"
@@ -186,6 +209,10 @@ cat >/etc/systemd/system/tor@default.service.d/wait-for-bridge.conf <<'EOF'
 [Unit]
 After=libvirtd.service jobs-mark-route.service
 Requires=libvirtd.service
+
+[Service]
+# Match the raised ConnLimit in torrc so Tor can actually open that many sockets.
+LimitNOFILE=16384
 EOF
 systemctl daemon-reload
 if [ "$WG_PLACEHOLDER" -eq 0 ]; then
@@ -214,6 +241,6 @@ fi
 cat <<EOM
 
   Host plane ready. Next:
-    sudo SSH_PUBKEY="\$(cat ~/.ssh/id_ed25519.pub)" DISK=400G ./jobs-vm.sh   # build the VM
+    sudo SSH_PUBKEY="\$(cat ~/.ssh/id_ed25519.pub)" DATA_DISK=900G ./jobs-vm.sh   # build VM
     sudo ./verify.sh            # prove the seal (add --killswitch for the disruptive test)
 EOM

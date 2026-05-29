@@ -30,7 +30,10 @@ only to contain hostile code has been removed.
 - One Ubuntu host + one job VM, both provisioned by scripts.
 - A fail-closed firewall so a dropped tunnel can never expose your real IP.
 - Non-interactive VM creation from a cloud image (no clicking through an installer).
-- A big data disk for "massive jobs" and a trivial `rsync`-over-LAN retrieval path.
+- A **big native scratch disk** (≈900 GB, your whole 1 TB) for high-disk workloads, plus a
+  small share + trivial `rsync`-over-LAN path for the outputs you keep.
+- Host + guest pre-tuned for **high connection concurrency** (conntrack, ports, fds, Tor
+  conn limits) — see §8b for the inherent Tor/VPN throughput ceilings.
 
 **You give up (vs. the old hostile-agent design):**
 - The job VM is isolated for *networking*, but it shares the host kernel boundary like any
@@ -81,10 +84,11 @@ network anonymity.
              net "jobs-net" → bridge virbr-jobs (10.13.13.1/24, forward=open)
                └── jobs-vm   (Debian cloud image, auto-provisioned by cloud-init)
                      • only NIC: on virbr-jobs (10.13.13.10) → all egress tunneled
-                     • virtio-fs share:  /var/jobs/share  ↔  /mnt/share
-                     • big data disk for results
+                     • /data   → big native scratch disk (~900 GB, raw virtio-blk)
+                     • /mnt/share → small virtio-fs share for finished outputs only
 
-   data out:  jobs-vm → /mnt/share → host /var/jobs/share → you pull over LAN:
+   data out:  jobs-vm writes results → /mnt/share/out → host /var/jobs/share/out
+              → you pull over LAN:
               you@workstation$ rsync ops@<box-LAN-ip>:/var/jobs/share/out/ ./
 ```
 
@@ -117,7 +121,10 @@ network anonymity.
 1. Boot the verified Ubuntu Server installer. During install:
    - **Encrypt the disk** (LUKS2) — your data-at-rest seal for whatever the jobs collect.
    - Minimal install; install **OpenSSH server** (you'll pull data over it on the LAN).
-   - Give `/` (or a `/var` mount) most of the 1 TB so job data has room.
+   - **Plan the 1 TB for the scratch disk.** The VM's working set lives on a big disk
+     under `/var/jobs`. Either give `/var` (or `/`) ~950 GB so the scratch **image** has
+     room, **or** leave ~900 GB unallocated / in an LVM volume and pass it to the VM as a
+     raw block device (faster — see §7, `DATA_DEV`). Keep the host root modest (~40–60 GB).
 2. Clone the repo and run the host provisioner (it installs everything and writes the
    network plane):
    ```bash
@@ -273,25 +280,35 @@ ip route show table 200                  # default via wg0 + blackhole
 
 ## 7. Build the job VM (non-interactive, from a cloud image)
 
-`jobs-vm.sh` builds the VM with **no installer**: it fetches a Debian cloud image, grows
-the root disk for big jobs, and hands libvirt a small cloud-init that creates your `ops`
-user, installs your SSH key, mounts the share, and seals DNS/IPv6.
+`jobs-vm.sh` builds the VM with **no installer**: a Debian cloud image for the OS, a big
+**native scratch disk** for the working set, and a small cloud-init that creates your `ops`
+user, installs your SSH key, formats/mounts the scratch disk, mounts the output share, and
+seals DNS/IPv6.
 
 ```bash
-# Put your PUBLIC ssh key where the script can read it (used to log into the VM):
-sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" DISK=400G ./jobs-vm.sh
+# SSH_PUBKEY logs you into the VM; DATA_DISK sizes the scratch disk.
+sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" DATA_DISK=900G ./jobs-vm.sh
 ```
 
 What it does:
-- Downloads `debian-13-genericcloud-amd64.qcow2` (verify the published checksum), copies it
-  to `/var/jobs/images/jobs.qcow2`, and `qemu-img resize`s it to `DISK` (default 200 GB).
-- Renders cloud-init `user-data` (hostname `jobs`, user `ops` + your key, `nameserver
-  10.13.13.1`, IPv6 off, `rsync`/`curl` preinstalled, the virtio-fs share mounted at
-  `/mnt/share`).
-- Runs `virt-install --import --cloud-init ... --filesystem /var/jobs/share,share,
-  driver.type=virtiofs --network network=jobs-net` with shared memory backing for
-  virtio-fs. The VM DHCPs `10.13.13.10` from the isolated bridge and gets its default route
-  and DNS pointed at the host — so **every** packet it sends is forced through the tunnels.
+- Downloads `debian-13-genericcloud-amd64.qcow2` (verify the published checksum) and makes
+  a small OS root disk from it (`DISK`, default **30 GB** — the OS only).
+- Provisions the **scratch disk** mounted at `/data` in the VM:
+  - default: a preallocated raw image `/var/jobs/images/data.img` of `DATA_DISK`
+    (default **900 GB**), attached as a `virtio-blk` device with `cache=none,io=native`
+    for throughput under heavy I/O;
+  - **faster:** pass a host block device/LVM volume/partition with `DATA_DEV=/dev/…` and it
+    is handed to the VM raw (no image-file layer). Best for "all 1 TB used".
+  - `DATA_FS` (default `xfs`) is the filesystem; cloud-init formats it on first boot only.
+- Renders cloud-init (`ops` + your key, `nameserver 10.13.13.1`, IPv6 off, **ephemeral-port
+  + open-file limits raised** for high connection concurrency, `rsync`/`curl`/`xfsprogs`,
+  the virtio-fs share at `/mnt/share`).
+- Runs `virt-install --import` (OS disk + scratch disk + virtio-fs share, on `jobs-net`).
+  The VM DHCPs `10.13.13.10` and points its default route + DNS at the host — so **every**
+  packet it sends is forced through the tunnels.
+
+Tunables (env): `DISK` (OS root, 30G), `DATA_DISK` (scratch, 900G), `DATA_DEV` (use a raw
+device instead), `DATA_FS` (xfs), `RAM_MB` (3072), `VCPUS` (2), `CLOUDIMG_URL`.
 
 Once it's up:
 
@@ -299,24 +316,26 @@ Once it's up:
 ssh ops@10.13.13.10          # from the host (your key was provisioned by cloud-init)
 ```
 
-Run your jobs as `ops`. All of their TCP/DNS goes through Tor, all UDP through ProtonVPN.
-Write results into `/mnt/share/out/`.
+Run your jobs as `ops`. All TCP/DNS goes through Tor, all UDP through ProtonVPN. Put the
+**heavy working set on `/data`** (native speed); write only the **finished outputs** you
+want to keep into `/mnt/share/out/` (virtio-fs is slower — don't run the workload on it).
 
-> **Reset-on-demand:** to wipe job state, `virsh destroy jobs-vm`, re-run `jobs-vm.sh`
-> (it recreates the disk from the pristine cloud image). Your data in `/var/jobs/share` on
-> the host is untouched.
+> **Reset-on-demand:** to wipe job state, `virsh destroy jobs-vm; virsh undefine --nvram
+> jobs-vm`, then re-run `jobs-vm.sh`. By default it **reuses** the existing `data.img`
+> (your scratch survives); delete it first if you want a clean scratch disk too.
 
 ---
 
 ## 8. Moving data out — the easy path
 
-The VM writes to the virtio-fs share; the host owns the directory; you pull it over the
-LAN. No sanitization step (jobs are trusted), no second VM.
+The working set stays on `/data` inside the VM. Only the **finished outputs** go through
+the virtio-fs share, which the host owns; you pull them over the LAN. No sanitization step
+(jobs are trusted), no second VM.
 
 Inside `jobs-vm`:
 ```bash
-mkdir -p /mnt/share/out
-rsync -a results/ /mnt/share/out/        # or write directly into /mnt/share/out
+# work on /data; copy only the results worth keeping into the share
+rsync -a /data/results/ /mnt/share/out/
 ```
 
 On the host, the same files appear at `/var/jobs/share/out/`. From your workstation:
@@ -328,6 +347,42 @@ rsync -av ops@<box-LAN-ip>:/var/jobs/share/out/ ~/job-results/$(date +%F)/
 table only governs `virbr-jobs`, so the host's own SSH on the LAN works normally. To put
 inputs *into* a job, drop them in `/var/jobs/share/in/` on the host; the VM sees them at
 `/mnt/share/in/`.
+
+> **Moving the whole `/data` later?** This design keeps the bulk on `/data` and moves only
+> outputs, per your setup. If you ever need the entire scratch disk on your network, shut
+> the VM down (`virsh shutdown jobs-vm`) and loop-mount the image read-only on the host
+> (`mount -o ro,loop /var/jobs/images/data.img /mnt/x`), then `rsync` it over the LAN.
+> Never mount it while the VM is running — concurrent writers corrupt the filesystem.
+
+---
+
+## 8b. Throughput & limits (high network + disk usage)
+
+Read this before you scale up — two ceilings are inherent to the design, and a few knobs
+are already tuned for you.
+
+- **Tor is the TCP bottleneck.** All TCP/DNS rides Tor. For **many small connections**
+  (crawling/scraping) that's workable: it's latency-bound, not bandwidth-bound, and the
+  high concurrency is handled. Expect per-request latency of a few hundred ms to a couple
+  of seconds (circuit setup + relays), and modest aggregate throughput. Bulk multi-MB/s
+  transfers over Tor are a different story — slow and discouraged on the network.
+- **Your exit IP rotates.** Tor retires "dirty" circuits about every 10 minutes
+  (`MaxCircuitDirtiness`, default 600 s), so a scraper's apparent source IP changes
+  periodically. That can help (spreads load across IPs) or hurt (breaks IP-pinned
+  sessions). Tune it in `/etc/tor/torrc` — raise to hold an IP longer, lower to rotate
+  faster — then `systemctl reload tor@default`.
+- **Connection-table headroom (already tuned by `setup.sh`).** The host NATs/redirects
+  every connection the VM opens, so high concurrency is bounded by conntrack, ephemeral
+  ports, and file descriptors. `setup.sh` raises `nf_conntrack_max` (1M) with a shorter
+  `TIME_WAIT`, widens `ip_local_port_range`, and bumps Tor's `ConnLimit` (8192) +
+  `LimitNOFILE`. The VM raises its own ephemeral-port range and `nofile` limit for `ops`.
+  If you push connection counts very high, watch `nft list ruleset | grep -i conntrack`
+  and `dmesg | grep -i conntrack` (table-full drops) on the host.
+- **Disk.** `/data` is a raw `virtio-blk` device with `cache=none,io=native` and `noatime`
+  — the right shape for sustained heavy I/O. For the very best throughput when "all 1 TB is
+  used", back it with a real partition/LVM volume via `DATA_DEV=` rather than an image file.
+- **ProtonVPN free** gives one connection and throttled, variable speed — fine for the UDP
+  side of a small-connection workload, not for bulk.
 
 ---
 
@@ -385,16 +440,19 @@ sudo tcpdump -ni eth0 'port 53'      # MUST be silent (DNS only via Tor)
 
 ## 11. Quick build checklist
 
-- [ ] Ubuntu Server installed (verified ISO, full-disk encryption, OpenSSH server, most of
-      the 1 TB on `/` or `/var`)
-- [ ] `sudo ./setup.sh` run: packages in, IPv6 off, `ip_forward=1`, `/var/jobs` laid out
+- [ ] Ubuntu Server installed (verified ISO, full-disk encryption, OpenSSH server, ~950 GB
+      on `/var` for the scratch disk, or ~900 GB free for a `DATA_DEV` block device)
+- [ ] `sudo ./setup.sh` run: packages in, IPv6 off, `ip_forward=1`, conntrack/port/fd
+      tuning applied, `/var/jobs` laid out
 - [ ] `/etc/wireguard/wg0.conf`: free Proton, `Table=off`, no `DNS=`, numeric endpoint, 0600
 - [ ] Re-ran `setup.sh` after installing the real `wg0.conf` (tunnels + endpoint pin live)
 - [ ] `wg show wg0` shows a recent handshake; Tor listening on 10.13.13.1:9040 / :5300
 - [ ] `nft list table inet ks` loaded, `forward` is `policy drop`; `ip route show table 200`
       has `default dev wg0` + `blackhole default`
-- [ ] `sudo SSH_PUBKEY=... DISK=400G ./jobs-vm.sh` built `jobs-vm`; one NIC on `jobs-net`
-- [ ] `ssh ops@10.13.13.10` works from the host; `check.torproject.org` reports `IsTor:true`
+- [ ] `sudo SSH_PUBKEY=... DATA_DISK=900G ./jobs-vm.sh` built `jobs-vm`; one NIC on
+      `jobs-net`; two disks (OS + scratch)
+- [ ] `ssh ops@10.13.13.10` works; `df -h /data` shows the scratch disk; `check.torproject.org`
+      reports `IsTor:true`
 - [ ] LAN/real-IP unreachable from the VM; `tcpdump` on the uplink shows no clear DNS
 - [ ] `rsync ops@<box-LAN-ip>:/var/jobs/share/out/ .` retrieves results from your workstation
 

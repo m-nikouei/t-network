@@ -15,7 +15,9 @@ TCB. If you want Ansible later, lifting `setup.sh` into a role is straightforwar
 
 1. **Install Ubuntu Server LTS** on the wiped laptop. Verify the ISO checksum, enable
    full-disk encryption (LUKS2), choose the minimal install, **install OpenSSH server**
-   (you pull data over it on the LAN), and give `/` (or `/var`) most of the 1 TB.
+   (you pull data over it on the LAN). Reserve the bulk of the 1 TB for the VM's scratch
+   disk: ~950 GB on `/var`, or leave ~900 GB free for a `DATA_DEV` block device (see
+   Step 3). Keep the host root itself modest (~40–60 GB).
 2. **Download the ProtonVPN free WireGuard config** (web login) — the one secret. It is
    never stored in the repo; you install it by hand (below).
 3. Have your **workstation's SSH public key** ready; `jobs-vm.sh` installs it into the VM.
@@ -61,24 +63,35 @@ Unlike the old design, the VM is built **non-interactively** — a Debian cloud 
 cloud-init, no installer to click through:
 
 ```bash
-sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" DISK=400G ./jobs-vm.sh
+sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" DATA_DISK=900G ./jobs-vm.sh
 ```
 
 It downloads `debian-13-genericcloud-amd64.qcow2` (cached at
-`/var/jobs/images/base-debian13.qcow2`), copies it to `jobs.qcow2`, `qemu-img resize`s to
-`DISK`, renders a cloud-init `user-data` (user `ops` + your key, `nameserver 10.13.13.1`,
-IPv6 off, `rsync`/`curl`, the virtio-fs `share` mounted at `/mnt/share`), and runs
-`virt-install --import --cloud-init ... --filesystem ... --network network=jobs-net`.
+`/var/jobs/images/base-debian13.qcow2`), makes a **small OS root disk** from it, provisions
+a **big native scratch disk** for `/data`, renders a cloud-init `user-data` (user `ops` +
+your key, `nameserver 10.13.13.1`, IPv6 off, raised ephemeral-port + open-file limits for
+high connection concurrency, `rsync`/`curl`/`xfsprogs`, the virtio-fs `share` at
+`/mnt/share`), and runs `virt-install --import` with the OS disk, the scratch disk, the
+share, on `jobs-net`.
 
-Tunables via env: `VM`, `RAM_MB` (default 3072), `VCPUS` (2), `DISK` (200G),
+The scratch disk is the key piece for a high-disk workload:
+- default: a preallocated raw image `/var/jobs/images/data.img` (`DATA_DISK`, 900 GB),
+  attached `virtio-blk` with `cache=none,io=native,discard=unmap`;
+- **best performance:** `DATA_DEV=/dev/sdX` (or an LVM volume/partition) hands a real block
+  device to the VM raw, skipping the image-file layer — recommended when all ~1 TB is used.
+
+Tunables via env: `VM`, `RAM_MB` (3072), `VCPUS` (2), `DISK` (OS root, 30G),
+`DATA_DISK` (scratch, 900G), `DATA_DEV` (raw device, unset), `DATA_FS` (xfs),
 `CLOUDIMG_URL`. **Verify** the image against the published `SHA512SUMS` before trusting it.
 
-To rebuild from scratch (wipe job state):
+To rebuild the VM (fresh OS, keep the scratch data):
 ```bash
 sudo virsh destroy jobs-vm 2>/dev/null; sudo virsh undefine --nvram jobs-vm
-sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" ./jobs-vm.sh
+sudo SSH_PUBKEY="$(cat ~/.ssh/id_ed25519.pub)" ./jobs-vm.sh   # reuses existing data.img
 ```
-Data under `/var/jobs/share` on the host is not touched by a rebuild.
+The OS root disk is recreated from the pristine cloud image; `jobs-vm.sh` **reuses** the
+existing `data.img` (and never touches `DATA_DEV`), so `/data` and `/var/jobs/share`
+survive. Delete `/var/jobs/images/data.img` first if you want a clean scratch disk too.
 
 ## Step 4 — verify (`verify.sh`)
 
@@ -88,14 +101,16 @@ Host-side (automated):
 - `table inet ks` loaded, `forward` is `policy drop`, redirect + wg0-accept rules present
 - `ip rule` has `fwmark 0x2 → table 200`; table 200 has `default dev wg0` + `blackhole`
 - `wg0` has a handshake `< 5 min` old
-- libvirt network `jobs-net` active; `jobs-vm` has exactly 1 NIC bound to `jobs-net`
-- `ip_forward=1`, IPv6 disabled
+- libvirt network `jobs-net` active; `jobs-vm` has exactly 1 NIC bound to `jobs-net` and
+  two disks (OS + scratch)
+- `ip_forward=1`, IPv6 disabled, `nf_conntrack_max ≥ 1M` (high-concurrency headroom)
 
 With `--killswitch`: stops `tor@default` briefly, confirms the listener disappears (TCP
 path fails closed), then restarts.
 
 Guest-side (manual): the script prints a copy-paste block to run inside `jobs-vm` —
-TCP-via-Tor, UDP-via-Proton, DNS, LAN unreachability, and the writable `/mnt/share/out`.
+TCP-via-Tor, UDP-via-Proton, DNS, LAN unreachability, the mounted `/data` scratch disk,
+and the writable `/mnt/share/out`.
 
 Exit code is non-zero if any host-side check fails, so it slots into a post-build gate.
 

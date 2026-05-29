@@ -72,14 +72,20 @@ if virsh dominfo jobs-vm >/dev/null 2>&1; then
   else
     no "jobs-vm NIC NOT bound to jobs-net (LEAK PATH)"
   fi
+  disks=$(virsh domblklist jobs-vm 2>/dev/null | awk '/vd[ab]/{n++} END{print n+0}')
+  [ "$disks" -ge 2 ] && ok "jobs-vm has the scratch disk attached (2 disks)" \
+                     || no "jobs-vm has $disks disk(s) — scratch /data disk missing?"
 else
   no "jobs-vm not defined yet (build it: sudo SSH_PUBKEY=... ./jobs-vm.sh)"
 fi
 
-echo "[6] sysctl"
+echo "[6] sysctl + concurrency tuning"
 [ "$(sysctl -n net.ipv4.ip_forward)" = 1 ] && ok "ip_forward=1" || no "ip_forward != 1"
 [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6)" = 1 ] \
   && ok "IPv6 disabled" || no "IPv6 NOT disabled (potential leak path)"
+cmax=$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo 0)
+[ "${cmax:-0}" -ge 1048576 ] && ok "nf_conntrack_max=$cmax (high-concurrency headroom)" \
+  || no "nf_conntrack_max=$cmax (low — re-run setup.sh; high concurrency may drop conns)"
 
 if [ "${1:-}" = "--killswitch" ]; then
   echo "[7] kill-switch: stop tor, the redirect target disappears"
@@ -113,7 +119,10 @@ cat <<'EOM'
   nmap -sn 192.168.1.0/24       # discovers nothing
   ip neigh                       # only 10.13.13.1
 
-  # The data share is writable; results land on the host at /var/jobs/share/out
+  # Scratch disk mounted and writable (the big working set lives here)
+  df -h /data && touch /data/.probe && rm /data/.probe && echo "/data OK"
+
+  # The output share is writable; results land on the host at /var/jobs/share/out
   echo hello > /mnt/share/out/marker && ls -l /mnt/share/out/marker
 
 EOM
