@@ -1,14 +1,13 @@
 #!/bin/bash
-# Prove the seal holds on the Ubuntu host. Most checks are host-side; a few must
-# be run by you inside agent-vm (printed at the end as a copy-paste block).
+# Prove the seal holds on the host. Host-side checks are automated; a few must be
+# run by you inside jobs-vm (printed at the end as a copy-paste block).
 #   sudo ./verify.sh              # non-disruptive checks
 #   sudo ./verify.sh --killswitch # also stops tor briefly to confirm fail-closed
 set -uo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }
 
-UPLINK="${UPLINK:-eth0}"
-BRIDGE="virbr-agent"
+BRIDGE="virbr-jobs"
 BRIDGE_IP="10.13.13.1"
 
 PASS=0; FAIL=0
@@ -18,7 +17,7 @@ no(){ printf '  \033[1;31mFAIL\033[0m %s\n' "$1"; FAIL=$((FAIL+1)); }
 echo "[1] host network plane"
 ip -o link show "$BRIDGE" >/dev/null 2>&1 \
   && ok "bridge $BRIDGE exists" || no "bridge $BRIDGE missing"
-ip -4 -o addr show "$BRIDGE" | grep -q "$BRIDGE_IP" \
+ip -4 -o addr show "$BRIDGE" 2>/dev/null | grep -q "$BRIDGE_IP" \
   && ok "$BRIDGE has $BRIDGE_IP" || no "$BRIDGE missing $BRIDGE_IP"
 ss -ltn "sport = :9040" 2>/dev/null | grep -q "$BRIDGE_IP:9040" \
   && ok "tor TransPort listening on $BRIDGE_IP:9040" \
@@ -39,7 +38,7 @@ if nft list table inet ks >/dev/null 2>&1; then
     && ok "TCP -> tor redirect rule present" \
     || no "TCP -> tor redirect rule missing"
 else
-  no "table inet ks NOT loaded (firewall is not protecting the agent)"
+  no "table inet ks NOT loaded (firewall is not protecting the VM)"
 fi
 
 echo "[3] policy routing"
@@ -61,32 +60,20 @@ else
 fi
 
 echo "[5] libvirt"
-virsh net-info agent-net 2>/dev/null | grep -q 'Active: *yes' \
-  && ok "libvirt network agent-net active" || no "agent-net not active"
-if virsh dominfo agent-vm >/dev/null 2>&1; then
-  ok "agent-vm defined"
-  ifs=$(virsh dumpxml agent-vm 2>/dev/null | grep -c '<interface ')
-  [ "$ifs" -eq 1 ] && ok "agent-vm has exactly 1 NIC" \
-                   || no "agent-vm has $ifs NICs (must be 1)"
-  if virsh dumpxml agent-vm 2>/dev/null | grep -q "source network='agent-net'"; then
-    ok "agent-vm NIC bound to agent-net"
+virsh net-info jobs-net 2>/dev/null | grep -q 'Active: *yes' \
+  && ok "libvirt network jobs-net active" || no "jobs-net not active"
+if virsh dominfo jobs-vm >/dev/null 2>&1; then
+  ok "jobs-vm defined"
+  ifs=$(virsh dumpxml jobs-vm 2>/dev/null | grep -c '<interface ')
+  [ "$ifs" -eq 1 ] && ok "jobs-vm has exactly 1 NIC" \
+                   || no "jobs-vm has $ifs NICs (must be 1)"
+  if virsh dumpxml jobs-vm 2>/dev/null | grep -q "source network='jobs-net'"; then
+    ok "jobs-vm NIC bound to jobs-net"
   else
-    no "agent-vm NIC NOT bound to agent-net (LEAK PATH)"
-  fi
-  if virsh dumpxml agent-vm 2>/dev/null | grep -qE 'copypaste.*yes|filetransfer.*yes'; then
-    no "agent-vm has clipboard/filetransfer enabled (covert channel)"
-  else
-    ok "agent-vm has no SPICE clipboard / filetransfer"
+    no "jobs-vm NIC NOT bound to jobs-net (LEAK PATH)"
   fi
 else
-  no "agent-vm not defined yet (build it per setup.sh's printed commands)"
-fi
-if virsh dominfo triage-vm >/dev/null 2>&1; then
-  tifs=$(virsh dumpxml triage-vm 2>/dev/null | grep -c '<interface ')
-  [ "$tifs" -eq 0 ] && ok "triage-vm has zero NICs (air-gapped)" \
-                    || no "triage-vm has $tifs NICs (must be 0)"
-else
-  no "triage-vm not defined yet"
+  no "jobs-vm not defined yet (build it: sudo SSH_PUBKEY=... ./jobs-vm.sh)"
 fi
 
 echo "[6] sysctl"
@@ -101,7 +88,7 @@ if [ "${1:-}" = "--killswitch" ]; then
   if ss -ltn | grep -q "$BRIDGE_IP:9040"; then
     no "tor STILL listening after stop (something is wrong)"
   else
-    ok "tor port closed; any agent TCP REDIRECT now lands on a closed port"
+    ok "tor port closed; any VM TCP REDIRECT now lands on a closed port"
   fi
   systemctl start tor@default
   sleep 3
@@ -111,24 +98,23 @@ fi
 
 cat <<'EOM'
 
---- Run these INSIDE agent-vm (manual; we don't keep a host->guest control channel) ---
+--- Run these INSIDE jobs-vm (ssh ops@10.13.13.10) ---
   # TCP via Tor (should print {"IsTor":true,"IP":"..."})
   curl -s https://check.torproject.org/api/ip
 
-  # LAN unreachable (every line MUST fail / time out)
-  ping -c2 -W2 192.168.1.1
-  ping -c2 -W2 192.168.0.1
-  nmap -sn 192.168.1.0/24
+  # UDP via ProtonVPN (should report the Proton IP, distinct from the Tor exit)
+  curl --http3-only -s https://cloudflare-quic.com/ | head
 
   # DNS via Tor
   getent hosts example.com
 
-  # /mnt/in is read-only
-  touch /mnt/in/x        # expect: Read-only file system
-  echo hello > /mnt/out/marker && ls -l /mnt/out/marker
+  # No route to your real IP / LAN (every line MUST fail or time out)
+  ping -c2 -W2 192.168.1.1
+  nmap -sn 192.168.1.0/24       # discovers nothing
+  ip neigh                       # only 10.13.13.1
 
-  # neighbor table only sees the gateway (no leakage of other hosts)
-  ip neigh
+  # The data share is writable; results land on the host at /var/jobs/share/out
+  echo hello > /mnt/share/out/marker && ls -l /mnt/share/out/marker
 
 EOM
 
