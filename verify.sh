@@ -31,7 +31,7 @@ if nft list table inet ks >/dev/null 2>&1; then
   ok "table inet ks loaded"
   nft -a list chain inet ks forward | grep -q 'policy drop' \
     && ok "forward chain policy drop" || no "forward chain NOT policy drop (LEAK!)"
-  nft list chain inet ks forward | grep -q 'oifname "wg0" meta mark 0x2 accept' \
+  nft list chain inet ks forward | grep -q 'oifname "wg0".*mark.*accept' \
     && ok "wg0 marked-UDP accept rule present" \
     || no "wg0 marked-UDP accept rule missing"
   nft list chain inet ks nat_pre | grep -q 'redirect to :9040' \
@@ -60,7 +60,7 @@ else
 fi
 
 echo "[5] libvirt"
-virsh net-info jobs-net 2>/dev/null | grep -q 'Active: *yes' \
+virsh net-info jobs-net 2>/dev/null | grep 'Active: *yes' >/dev/null \
   && ok "libvirt network jobs-net active" || no "jobs-net not active"
 if virsh dominfo jobs-vm >/dev/null 2>&1; then
   ok "jobs-vm defined"

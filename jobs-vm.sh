@@ -51,6 +51,24 @@ cp --reflink=auto "$BASE" "$IMG"
 qemu-img resize "$IMG" "$DISK"
 chown libvirt-qemu:kvm "$IMG"
 
+# Remove console=tty0 from GRUB: the VM is headless (no VGA device in the libvirt
+# domain). The kernel's vgacon probes the VGA framebuffer at 0xB8000 on startup; with
+# no VGA device present QEMU doesn't map that address and the guest triple-faults
+# before printing anything. console=ttyS0 (serial) is the only console we need.
+# Fix both grub.cfg (the generated file) AND /etc/default/grub (the source), so that
+# any subsequent update-grub invocation (e.g. during cloud-init package updates) also
+# produces a grub.cfg without console=tty0.
+modprobe nbd max_part=8 2>/dev/null || true
+qemu-nbd --connect=/dev/nbd0 "$IMG"
+sleep 1
+MNTDIR=$(mktemp -d)
+mount /dev/nbd0p1 "$MNTDIR"
+sed -i 's/ console=tty0//' "$MNTDIR/boot/grub/grub.cfg"
+sed -i 's/console=tty0 //' "$MNTDIR/etc/default/grub"
+echo "    removed console=tty0 from grub.cfg and /etc/default/grub (headless VM, no VGA device)"
+umount "$MNTDIR"; rmdir "$MNTDIR"
+qemu-nbd --disconnect /dev/nbd0
+
 say "3/5  provision the big scratch disk for /data"
 if [ -n "$DATA_DEV" ]; then
   [ -b "$DATA_DEV" ] || die "DATA_DEV=$DATA_DEV is not a block device"
@@ -102,10 +120,6 @@ write_files:
       # Raise the open-file ceiling for the workload (many concurrent sockets/files).
       ops soft nofile 1048576
       ops hard nofile 1048576
-  - path: /etc/resolv.conf
-    content: |
-      # DNS goes to the host gateway, which redirects it into Tor.
-      nameserver 10.13.13.1
 mounts:
   - [ share, /mnt/share, virtiofs, "rw,nosuid,nodev", "0", "0" ]
   # /dev/vdb is the big scratch disk; noatime cuts write amplification under heavy I/O.
@@ -123,7 +137,6 @@ runcmd:
   - [ mount, /data ]
   - [ bash, -c, "chown ops:ops /data" ]
   - [ mkdir, -p, /mnt/share/in, /mnt/share/out ]
-  - [ chattr, +i, /etc/resolv.conf ]
 EOF
 
 say "5/5  virt-install --import (no installer): OS disk + scratch disk + virtio-fs share"
@@ -143,6 +156,21 @@ virt-install \
   --rng /dev/urandom \
   --graphics none \
   --noautoconsole
+
+# virt-install with --graphics none removes the VGA device. Without a VGA device the
+# libvirt domain uses -nodefaults which prevents QEMU from mapping the ISA VGA window
+# (0xA0000-0xBFFFF). The Debian kernel probes that window early in boot and triple-
+# faults when it is absent. Stop the domain immediately, add a VGA device to the
+# persistent XML (no display backend — purely to map the window), then restart so
+# cloud-init runs on the very first boot with VGA present.
+virsh destroy "$VM" 2>/dev/null || true
+virsh attach-device "$VM" --config <(cat <<'VGAXML'
+<video>
+  <model type="vga" vram="16384" heads="1" primary="yes"/>
+</video>
+VGAXML
+) || die "Failed to add VGA device — check virsh dumpxml $VM"
+virsh start "$VM"
 
 cat <<EOM
 

@@ -173,9 +173,10 @@ table inet ks {
         iifname \$BRIDGE udp dport 53 redirect to :5300
         iifname \$BRIDGE meta l4proto tcp redirect to :9040
     }
-    # VM -> host: only the Tor ports on the bridge IP; everything else from the VM dropped.
+    # VM -> host: DHCP, Tor ports, established replies; everything else from the VM dropped.
     chain input {
         type filter hook input priority 0; policy accept;
+        iifname \$BRIDGE udp dport 67 accept
         iifname \$BRIDGE tcp dport { 9040, 5300 } accept
         iifname \$BRIDGE udp dport 5300 accept
         iifname \$BRIDGE ct state established,related accept
@@ -222,9 +223,11 @@ else
   warn "wg0.conf is a placeholder — leaving wg-quick@wg0 and tor@default DISABLED."
 fi
 
-# Host-owned share + image dirs. /var/jobs/share is the data path; you pull from it
-# over the LAN. libvirt-qemu must own them so virtiofsd/the VM can read+write.
-install -d -m 0750 -o libvirt-qemu -g kvm "$JOBS_ROOT"/{images,share,share/in,share/out}
+# Host-owned share + image dirs. images/ is private; share/in and share/out must be
+# writable by the VM's ops user (uid 1000 in the guest maps directly through virtiofsd
+# passthrough). Mode 0777 lets the guest write without knowing the host uid in advance.
+install -d -m 0750 -o libvirt-qemu -g kvm "$JOBS_ROOT"/{images,share}
+install -d -m 0777 -o libvirt-qemu -g kvm "$JOBS_ROOT"/{share/in,share/out}
 
 if [ "$WG_PLACEHOLDER" -eq 1 ]; then
   cat <<EOM

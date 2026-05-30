@@ -241,9 +241,10 @@ table inet ks {
         iifname $BRIDGE udp dport 53 redirect to :5300
         iifname $BRIDGE meta l4proto tcp redirect to :9040
     }
-    # VM → host: only the Tor ports on the bridge IP. Everything else from the VM dropped.
+    # VM → host: DHCP, Tor ports, established replies; everything else from the VM dropped.
     chain input {
         type filter hook input priority 0; policy accept;
+        iifname $BRIDGE udp dport 67 accept
         iifname $BRIDGE tcp dport { 9040, 5300 } accept
         iifname $BRIDGE udp dport 5300 accept
         iifname $BRIDGE ct state established,related accept
