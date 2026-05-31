@@ -164,14 +164,14 @@ table inet ks {
     # Mark all VM UDP (except DNS) for fwmark routing into wg0.
     chain premark {
         type filter hook prerouting priority -150; policy accept;
-        iifname \$BRIDGE udp dport != 53 meta mark set 0x2
+        iifname \$BRIDGE udp dport != 53 counter meta mark set 0x2
     }
     # Transparent redirect: VM TCP -> local Tor; DNS -> Tor DNSPort.
     chain nat_pre {
         type nat hook prerouting priority -150; policy accept;
         iifname \$BRIDGE tcp dport 53 redirect to :5300
         iifname \$BRIDGE udp dport 53 redirect to :5300
-        iifname \$BRIDGE meta l4proto tcp redirect to :9040
+        iifname \$BRIDGE meta l4proto tcp counter redirect to :9040
     }
     # VM -> host: DHCP, Tor ports, established replies; everything else from the VM dropped.
     chain input {
