@@ -58,9 +58,19 @@ say "3/8  tor: TransPort/DNSPort on $BRIDGE_IP only (+ high-concurrency conn lim
 cat >/etc/tor/torrc <<EOF
 User debian-tor
 DataDirectory /var/lib/tor
-SocksPort 0
+# SOCKS5 for app-aware proxying (qBittorrent peer/tracker connections). Bound to the
+# bridge IP only (jobs-net reachable, not external). NO per-destination isolation:
+# IsolateDestAddr/DestPort forces a separate circuit per peer, which churns and drops
+# BitTorrent's many short connections before the metadata/handshake completes. Default
+# (shared circuits) is what works for BT — matches a standard desktop Tor SOCKS setup.
+SocksPort $BRIDGE_IP:9050
 TransPort $BRIDGE_IP:9040
 DNSPort   $BRIDGE_IP:5300
+# ControlPort for the host dashboard (circuit view + NEWNYM exit rotation). Local only,
+# cookie auth. The dashboard user must be in the 'debian-tor' group to read the cookie
+# at /run/tor/control.authcookie. Kept here so re-running setup.sh doesn't drop it.
+ControlPort 127.0.0.1:9051
+CookieAuthentication 1
 AutomapHostsOnResolve 1
 VirtualAddrNetworkIPv4 10.192.0.0/10
 ExitRelay 0
@@ -107,27 +117,73 @@ WG_EP_IP="${WG_EP_LINE%:*}"
 WG_EP_PORT="${WG_EP_LINE##*:}"
 : "${WG_EP_PORT:=51820}"
 
-say "5/8  policy-route service (fwmark 0x2 -> table 200 -> wg0 / blackhole)"
+say "5/8  policy-route service + watchdog (fwmark 0x2 -> table 200 -> wg0 / blackhole)"
+
+# Idempotent reconciler — (re)asserts the marked-UDP policy route into wg0 with a
+# fail-closed blackhole fallback. Safe to run repeatedly; used by BOTH the oneshot
+# service and the watchdog timer below so the rule self-heals if the kernel ever loses
+# it WITHOUT a wg0 restart. (Observed failure: the oneshot showed active/exited while the
+# fwmark rule was gone from the kernel, so every VM UDP/DHT/tracker packet fell to the
+# uplink route, missed the wg0-only accept, and was silently dropped by the kill-switch.)
+install -m 755 /dev/stdin /usr/local/sbin/jobs-mark-route <<'EOF'
+#!/bin/sh
+# Re-assert fwmark 0x2 -> table 200 (default via wg0) with a blackhole fail-closed route.
+ip rule list | grep -q 'fwmark 0x2 lookup 200' || ip rule add fwmark 0x2 table 200
+ip route replace blackhole default metric 1000 table 200
+# Only (re)install the wg0 default while the interface exists; when wg0 is down the kernel
+# drops its routes and the lower-priority blackhole keeps marked UDP fail-closed (no leak).
+if ip link show wg0 >/dev/null 2>&1; then
+    ip route replace default dev wg0 table 200
+fi
+EOF
+
 cat >/etc/systemd/system/jobs-mark-route.service <<'EOF'
 [Unit]
 Description=Policy routing for job-VM-marked UDP via wg0
 After=wg-quick@wg0.service
-Requires=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+# PartOf: a wg0 restart (VPN reconnect) restarts this unit too, re-applying the rule.
+PartOf=wg-quick@wg0.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/ip rule add fwmark 0x2 table 200
-ExecStart=/usr/sbin/ip route replace default dev wg0 table 200
-ExecStart=/usr/sbin/ip route add blackhole default metric 1000 table 200
+ExecStart=/usr/local/sbin/jobs-mark-route
 ExecStop=/usr/sbin/ip route flush table 200
-ExecStop=/usr/sbin/ip rule del fwmark 0x2 table 200
+ExecStop=-/usr/sbin/ip rule del fwmark 0x2 table 200
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Watchdog: re-assert the rule every 30s so a silent loss self-heals within seconds —
+# the oneshot's RemainAfterExit cannot detect an externally-removed kernel rule.
+cat >/etc/systemd/system/jobs-mark-route-watchdog.service <<'EOF'
+[Unit]
+Description=Re-assert job-VM marked-UDP policy route (watchdog)
+After=jobs-mark-route.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jobs-mark-route
+EOF
+
+cat >/etc/systemd/system/jobs-mark-route-watchdog.timer <<'EOF'
+[Unit]
+Description=Periodically re-assert job-VM marked-UDP policy route
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl daemon-reload
 systemctl enable jobs-mark-route.service
+systemctl enable jobs-mark-route-watchdog.timer
 
 say "6/8  libvirt network 'jobs-net' (bridge $BRIDGE, $BRIDGE_NET, forward=open)"
 mkdir -p /etc/libvirt/qemu/networks
@@ -171,13 +227,17 @@ table inet ks {
         type nat hook prerouting priority -150; policy accept;
         iifname \$BRIDGE tcp dport 53 redirect to :5300
         iifname \$BRIDGE udp dport 53 redirect to :5300
+        # Host-local traffic (VM -> Tor SOCKS/Trans/DNS on the bridge IP) must NOT be
+        # redirected into TransPort, or the SOCKS5 path would loop back on itself.
+        # The input chain still gates exactly which host ports the VM may reach.
+        iifname \$BRIDGE ip daddr $BRIDGE_IP accept
         iifname \$BRIDGE meta l4proto tcp counter redirect to :9040
     }
     # VM -> host: DHCP, Tor ports, established replies; everything else from the VM dropped.
     chain input {
         type filter hook input priority 0; policy accept;
         iifname \$BRIDGE udp dport 67 accept
-        iifname \$BRIDGE tcp dport { 9040, 5300 } accept
+        iifname \$BRIDGE tcp dport { 9040, 9050, 5300 } accept
         iifname \$BRIDGE udp dport 5300 accept
         iifname \$BRIDGE ct state established,related accept
         iifname \$BRIDGE drop
@@ -223,11 +283,15 @@ else
   warn "wg0.conf is a placeholder — leaving wg-quick@wg0 and tor@default DISABLED."
 fi
 
-# Host-owned share + image dirs. images/ is private; share/in and share/out must be
-# writable by the VM's ops user (uid 1000 in the guest maps directly through virtiofsd
-# passthrough). Mode 0777 lets the guest write without knowing the host uid in advance.
-install -d -m 0750 -o libvirt-qemu -g kvm "$JOBS_ROOT"/{images,share}
-install -d -m 0777 -o libvirt-qemu -g kvm "$JOBS_ROOT"/{share/in,share/out}
+# Host-owned share + image dirs. images/ is private (qemu only). share/in and share/out
+# must be writable by the VM's ops user (uid 1000 in the guest maps directly through
+# virtiofsd passthrough, appearing as "other" here); mode 0777 lets the guest write
+# without knowing the host uid in advance. CRITICAL: share/ itself must be TRAVERSABLE
+# by that uid (0755, o+x) — at 0750 the guest can't enter the 0777 in/out subdirs, which
+# breaks the loader's access to magnets.json and the output share.
+install -d -m 0750 -o libvirt-qemu -g kvm "$JOBS_ROOT"/images
+install -d -m 0755 -o libvirt-qemu -g kvm "$JOBS_ROOT"/share
+install -d -m 0777 -o libvirt-qemu -g kvm "$JOBS_ROOT"/share/in "$JOBS_ROOT"/share/out
 
 if [ "$WG_PLACEHOLDER" -eq 1 ]; then
   cat <<EOM

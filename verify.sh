@@ -7,6 +7,10 @@ set -uo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (sudo $0)"; exit 1; }
 
+# virsh localizes its human-readable output (e.g. the "Active:" label in net-info),
+# so checks below that grep that text would break under a non-English locale. Pin C.
+export LC_ALL=C
+
 BRIDGE="virbr-jobs"
 BRIDGE_IP="10.13.13.1"
 
@@ -22,6 +26,9 @@ ip -4 -o addr show "$BRIDGE" 2>/dev/null | grep -q "$BRIDGE_IP" \
 ss -ltn "sport = :9040" 2>/dev/null | grep -q "$BRIDGE_IP:9040" \
   && ok "tor TransPort listening on $BRIDGE_IP:9040" \
   || no "tor TransPort not listening on $BRIDGE_IP:9040"
+ss -ltn "sport = :9050" 2>/dev/null | grep -q "$BRIDGE_IP:9050" \
+  && ok "tor SocksPort listening on $BRIDGE_IP:9050" \
+  || no "tor SocksPort not listening on $BRIDGE_IP:9050"
 ss -lun "sport = :5300" 2>/dev/null | grep -q "$BRIDGE_IP:5300" \
   && ok "tor DNSPort listening on $BRIDGE_IP:5300" \
   || no "tor DNSPort not listening on $BRIDGE_IP:5300"
@@ -49,6 +56,9 @@ ip route show table 200 2>/dev/null | grep -q '^default dev wg0' \
 ip route show table 200 2>/dev/null | grep -q 'blackhole default' \
   && ok "table 200 blackhole fallback present" \
   || no "table 200 blackhole fallback missing (UDP could leak if wg0 down)"
+systemctl is-active --quiet jobs-mark-route-watchdog.timer \
+  && ok "jobs-mark-route watchdog timer active (rule self-heals if lost)" \
+  || no "jobs-mark-route watchdog timer not active"
 
 echo "[4] wireguard"
 if wg show wg0 latest-handshakes 2>/dev/null | awk '{if ($2+0 > 0) found=1} END{exit found?0:1}'; then

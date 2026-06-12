@@ -36,10 +36,17 @@ sudo ./setup.sh                 # UPLINK=wlan0 ./setup.sh if you're on Wi-Fi
 ```
 
 It installs packages, writes `/etc/tor/torrc`, plants a placeholder
-`/etc/wireguard/wg0.conf` (if absent), defines `jobs-mark-route.service` and the libvirt
-network `jobs-net`, writes the kill-switch to `/etc/nftables.d/jobs-killswitch.nft` and
-includes it from `/etc/nftables.conf`, orders `tor@default` after `libvirtd` + the policy
-route, and lays out `/var/jobs/{images,share/{in,out}}`.
+`/etc/wireguard/wg0.conf` (if absent), defines `jobs-mark-route.service` (plus a
+`jobs-mark-route-watchdog.timer`) and the libvirt network `jobs-net`, writes the
+kill-switch to `/etc/nftables.d/jobs-killswitch.nft` and includes it from
+`/etc/nftables.conf`, orders `tor@default` after `libvirtd` + the policy route, and lays
+out `/var/jobs/{images,share/{in,out}}`.
+
+The policy route (`fwmark 0x2 → table 200 → wg0`) is driven by an **idempotent reconciler**
+(`/usr/local/sbin/jobs-mark-route`) run by the oneshot service, `PartOf=wg-quick@wg0` so a
+VPN reconnect re-applies it, and a 30s **watchdog timer** that re-asserts it if the kernel
+ever loses the rule without a wg0 restart. (That silent loss drops *all* VM UDP — DHT and
+UDP trackers — so torrents bootstrap to `empty_swarm` while TCP-over-Tor still works.)
 
 Re-running is safe — every step is guarded (packages are no-ops if installed, configs are
 overwritten in place, `virsh net-info` gates the net-define, the include line is
