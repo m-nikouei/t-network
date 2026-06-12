@@ -139,7 +139,18 @@ runcmd:
   - [ mkdir, -p, /mnt/share/in, /mnt/share/out ]
 EOF
 
-say "5/5  virt-install --import (no installer): OS disk + scratch disk + virtio-fs share"
+say "5/5  build persistent cloud-init seed + virt-install --import"
+# Build the NoCloud seed ISO into a PERSISTENT path (not /tmp). virt-install's
+# --cloud-init writes the seed to /tmp/cloud-seed.iso and bakes that path into the
+# persistent domain XML. /tmp is wiped on every reboot, so the VM then refuses to
+# start ("Cannot access storage file '/tmp/cloud-seed.iso': No such file"). A seed
+# under $JOBS_ROOT/images survives reboots. cloud-init still no-ops on later boots
+# (same instance-id) — the seed only does work on the very first boot, but the disk
+# must remain attached and resolvable for the domain to start at all.
+SEED="$JOBS_ROOT/images/cloud-seed.iso"
+cloud-localds "$SEED" "$USERDATA"
+chown libvirt-qemu:kvm "$SEED"
+
 virt-install \
   --name "$VM" \
   --memory "$RAM_MB" --vcpus "$VCPUS" \
@@ -149,7 +160,7 @@ virt-install \
   --import \
   --disk path="$IMG",format=qcow2,bus=virtio,discard=unmap \
   --disk "$DATA_DISK_SPEC" \
-  --cloud-init user-data="$USERDATA" \
+  --disk path="$SEED",device=cdrom \
   --network network=jobs-net,model=virtio \
   --memorybacking access.mode=shared,source.type=memfd \
   --filesystem source="$JOBS_ROOT/share",target=share,driver.type=virtiofs \
@@ -170,6 +181,10 @@ virsh attach-device "$VM" --config <(cat <<'VGAXML'
 </video>
 VGAXML
 ) || die "Failed to add VGA device — check virsh dumpxml $VM"
+# Start the VM on every host boot. The persistent seed (step 5) makes this safe across
+# reboots; without autostart the guest stays shut off after a host restart and has to be
+# started by hand (sudo virsh start $VM).
+virsh autostart "$VM"
 virsh start "$VM"
 
 cat <<EOM
