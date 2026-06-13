@@ -266,14 +266,29 @@ systemctl reload nftables 2>/dev/null || systemctl restart nftables
 
 say "8/8  service ordering + host dirs"
 mkdir -p /etc/systemd/system/tor@default.service.d
-cat >/etc/systemd/system/tor@default.service.d/wait-for-bridge.conf <<'EOF'
+cat >/etc/systemd/system/tor@default.service.d/wait-for-bridge.conf <<EOF
 [Unit]
 After=libvirtd.service jobs-mark-route.service
 Requires=libvirtd.service
+# libvirtd reporting "started" does NOT mean the jobs-net bridge ($BRIDGE_IP on
+# virbr-jobs) has its address yet — libvirt brings the network up asynchronously.
+# So the ExecStartPre wait below is the real guard; here we just give it a patient
+# retry window instead of burning 5 tries in ~0.5s and latching into 'failed'.
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 # Match the raised ConnLimit in torrc so Tor can actually open that many sockets.
 LimitNOFILE=16384
+
+# torrc binds SocksPort/TransPort/DNSPort to $BRIDGE_IP. If Tor starts before that
+# address exists it dies with "Cannot assign requested address". Wait (up to 60s,
+# well within the 5min TimeoutStartSec) for the bridge address to appear first.
+ExecStartPre=/bin/bash -c 'for i in \$(seq 1 60); do ip -4 -o addr show | grep -qw $BRIDGE_IP && exit 0; sleep 1; done; echo "tor: timed out waiting for $BRIDGE_IP (virbr-jobs)"; exit 1'
+
+# Backstop: if we still lose the race, retry patiently within the window above.
+Restart=on-failure
+RestartSec=10
 EOF
 systemctl daemon-reload
 if [ "$WG_PLACEHOLDER" -eq 0 ]; then

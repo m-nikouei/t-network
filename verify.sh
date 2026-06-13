@@ -72,6 +72,9 @@ fi
 echo "[5] libvirt"
 virsh net-info jobs-net 2>/dev/null | grep 'Active: *yes' >/dev/null \
   && ok "libvirt network jobs-net active" || no "jobs-net not active"
+systemctl cat tor@default 2>/dev/null | grep -q "ExecStartPre=.*grep -qw $BRIDGE_IP" \
+  && ok "tor waits for the $BRIDGE_IP bridge before binding (no cold-boot race)" \
+  || no "tor missing bridge-wait ExecStartPre — cold boot may die 'Cannot assign requested address' (re-run setup.sh)"
 if virsh dominfo jobs-vm >/dev/null 2>&1; then
   ok "jobs-vm defined"
   ifs=$(virsh dumpxml jobs-vm 2>/dev/null | grep -c '<interface ')

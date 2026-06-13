@@ -267,8 +267,13 @@ table inet ks {
 
 ### 6f. Bring-up order
 
-The bridge must exist before Tor binds to its address; `setup.sh` orders `tor@default`
-after `libvirtd` and the policy route, then enables everything. Confirm:
+The bridge must exist before Tor binds to its address. `setup.sh` orders `tor@default`
+after `libvirtd` and the policy route — but `After=libvirtd` only waits for the daemon,
+not for libvirt to finish bringing the `jobs-net` network up, so on a cold boot Tor can
+still win the race and die with `Cannot assign requested address`. The drop-in therefore
+also adds an `ExecStartPre` that actively polls (up to 60s) for the bridge address before
+Tor binds, plus a patient `StartLimit`/`RestartSec` window so a near-miss self-heals
+instead of latching into `failed`. Confirm:
 
 ```bash
 wg show wg0                              # recent handshake

@@ -39,8 +39,10 @@ It installs packages, writes `/etc/tor/torrc`, plants a placeholder
 `/etc/wireguard/wg0.conf` (if absent), defines `jobs-mark-route.service` (plus a
 `jobs-mark-route-watchdog.timer`) and the libvirt network `jobs-net`, writes the
 kill-switch to `/etc/nftables.d/jobs-killswitch.nft` and includes it from
-`/etc/nftables.conf`, orders `tor@default` after `libvirtd` + the policy route, and lays
-out `/var/jobs/{images,share/{in,out}}`.
+`/etc/nftables.conf`, orders `tor@default` after `libvirtd` + the policy route (with an
+`ExecStartPre` that waits for the `jobs-net` bridge address so Tor never races the
+network up and dies on `Cannot assign requested address`), and lays out
+`/var/jobs/{images,share/{in,out}}`.
 
 The policy route (`fwmark 0x2 → table 200 → wg0`) is driven by an **idempotent reconciler**
 (`/usr/local/sbin/jobs-mark-route`) run by the oneshot service, `PartOf=wg-quick@wg0` so a
